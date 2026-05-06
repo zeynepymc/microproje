@@ -5,19 +5,21 @@
 #include <LiquidCrystal_I2C.h>
 
 // --- DONANIM PİN TANIMLARI ---
-#define MOISTURE_PIN 34   // Analog: Toprak Nem Sensörü
-#define RAIN_PIN     35   // Dijital: Yağmur Sensörü
-#define RELAY_PIN    26   // Dijital: Pompa Rölesi (Low-Level Trigger)
-#define BATTERY_PIN  32   // Analog: Batarya Voltajı
+#define MOISTURE_PIN 34   
+#define RAIN_PIN     35   
+#define RELAY_PIN    26   
+#define BATTERY_PIN  32   
 
 // --- SİSTEM & AĞ AYARLARI ---
-const char* ssid = "WIFI_ADINIZ"; 
-const char* password = "WIFI_SIFRENIZ"; 
-const char* backendUrl = "http://BACKEND_IP_ADRESI:3001/api/sensors/data"; 
-
-// --- HAVA DURUMU API AYARLARI (YENİ EKLENDİ) ---
-const char* openWeatherApiKey = "SENIN_OPENWEATHER_API_ANAHTARIN"; 
-const char* city = "Ankara,TR"; // Kendi şehrine göre değiştirebilirsin
+const char* ssid = "Zeynep"; 
+const char* password = "bisifrebul00"; 
+const char* backendUrl = "http://192.168.36.251/api/sensors/data";
+ 
+// --- HAVA DURUMU (OPEN-METEO) AYARLARI ---
+// API Key yok! Sadece şehrinizin enlem (latitude) ve boylam (longitude) değerleri.
+// Şu an Ankara (39.92, 32.85) için ayarlıdır. Başka şehir için değiştirebilirsiniz.
+const char* latitude = "39.92"; 
+const char* longitude = "32.85";
 
 LiquidCrystal_I2C lcd(0x27, 16, 2);
 
@@ -60,10 +62,8 @@ void loop() {
 
   // 3. KARAR MEKANİZMASI
   if (WiFi.status() == WL_CONNECTED) {
-    // ONLINE MOD: Backend'e verileri gönder
     processOnlineMode(moisture, isRaining, batteryV, batteryPct);
   } else {
-    // OFFLINE MOD: İnternet yoksa kendi başına karar ver
     processOfflineMode(moisture, isRaining);
   }
 
@@ -71,12 +71,14 @@ void loop() {
   delay(60000);
 }
 
-// --- YENİ EKLENEN HAVA DURUMU SORGULAMA FONKSİYONU ---
+// --- OPEN-METEO ÜCRETSİZ HAVA DURUMU SORGULAMA ---
 int fetchRainProbability() {
   if(WiFi.status() != WL_CONNECTED) return 0;
   
   HTTPClient http;
-  String url = "http://api.openweathermap.org/data/2.5/forecast?q=" + String(city) + "&cnt=1&appid=" + String(openWeatherApiKey);
+  
+  // forecast_hours=1 ile sadece içinde bulunduğumuz saatin yağış ihtimalini (% olarak) çekiyoruz.
+  String url = "http://api.open-meteo.com/v1/forecast?latitude=" + String(latitude) + "&longitude=" + String(longitude) + "&hourly=precipitation_probability&forecast_hours=1";
   
   http.begin(url);
   int httpCode = http.GET();
@@ -84,15 +86,16 @@ int fetchRainProbability() {
   
   if (httpCode == 200) {
     String payload = http.getString();
-    DynamicJsonDocument doc(2048); 
+    
+    // Open-Meteo JSON yanıtı için bellek ayırma
+    DynamicJsonDocument doc(1024); 
     deserializeJson(doc, payload);
     
-    // pop (Probability of precipitation): Yağış olasılığı (0.00 - 1.00 arası gelir)
-    float pop = doc["list"][0]["pop"]; 
-    prob = (int)(pop * 100); 
-    Serial.println("Yagmur Ihtimali: %" + String(prob));
+    // JSON içerisinden hourly -> precipitation_probability -> ilk elemanı (0. index) alıyoruz
+    prob = doc["hourly"]["precipitation_probability"][0]; 
+    Serial.println("Yagmur Ihtimali (Open-Meteo): %" + String(prob));
   } else {
-    Serial.println("Hava durumu API hatasi!");
+    Serial.println("Hava durumu API hatasi! HTTP Kodu: " + String(httpCode));
   }
   
   http.end();
@@ -111,7 +114,7 @@ void processOnlineMode(float m, bool r, float bv, float bp) {
   doc["temperature"] = 24.0; 
   doc["humidity"] = 50.0;
   
-  // YENİ: Artık 0 yerine API'den gelen gerçek veriyi gönderiyoruz
+  // Fonksiyonu çağır ve gelen %'lik veriyi backend'e ilet
   doc["rain_probability"] = fetchRainProbability(); 
   
   doc["is_raining"] = r;
@@ -139,28 +142,24 @@ void processOnlineMode(float m, bool r, float bv, float bp) {
 }
 
 void processOfflineMode(float m, bool r) {
-  // İnternet yoksa ve fiziksel yağmur varsa sulama yapma
-  if (r) return;
+  if (r) return; // Fiziksel yağmur varsa sulama yapma
 
-  // İnternet yoksa nem %30'un altına düştüğünde acil durum sulaması yap (10 sn)
   if (m < 30.0) {
-    runPump(10); 
+    runPump(10); // Acil durum sulaması
   }
 }
 
 // --- YARDIMCI FONKSİYONLAR ---
 
 void runPump(int seconds) {
-  seconds = constrain(seconds, 0, 30); // Max 30 sn güvenlik kilidi
+  seconds = constrain(seconds, 0, 30); 
   lcd.setCursor(0, 1);
   lcd.print("POMPA AKTIF!    "); 
   
-  // Röleyi AÇ (LOW)
-  digitalWrite(RELAY_PIN, LOW); 
+  digitalWrite(RELAY_PIN, LOW); // Röleyi AÇ
   delay(seconds * 1000);
   
-  // Röleyi KAPAT (HIGH)
-  digitalWrite(RELAY_PIN, HIGH); 
+  digitalWrite(RELAY_PIN, HIGH); // Röleyi KAPAT
   
   lcd.setCursor(0, 1);
   lcd.print("                "); 
