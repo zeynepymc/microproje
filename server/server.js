@@ -26,12 +26,35 @@ app.get('/api/sensors/latest', async (req, res) => {
 
 // --- ESP32'den Veri Alma Rotası (YAPAY ZEKA KARAR MEKANİZMASI) ---
 app.post('/api/sensors/data', async (req, res) => {
-    const { moisture, temperature, humidity, rain_probability, is_raining, battery_voltage, battery_level } = req.body;
+    // ESP32'den artık sadece donanım verileri geliyor
+    const { moisture, is_raining, battery_voltage, battery_level } = req.body;
 
     try {
         const now = new Date();
         
-        // 1. Gelen veriyi veritabanına kaydet
+        // --- YENİ: HAVA DURUMU VERİSİNİ SUNUCUDA ÇEKİYORUZ ---
+        let temperature = 0;
+        let humidity = 0;
+        let rain_probability = 0;
+
+        try {
+            // Senin oluşturduğun yeni URL
+            const weatherUrl = "https://api.open-meteo.com/v1/forecast?latitude=39.9199&longitude=32.8543&hourly=temperature_2m,relative_humidity_2m,precipitation_probability&timezone=auto&forecast_days=1";
+            const response = await fetch(weatherUrl);
+            const weatherData = await response.json();
+            
+            // O anki saati bulup verileri eşleştiriyoruz
+            const currentHour = now.getHours();
+            temperature = weatherData.hourly.temperature_2m[currentHour];
+            humidity = weatherData.hourly.relative_humidity_2m[currentHour];
+            rain_probability = weatherData.hourly.precipitation_probability[currentHour];
+            
+            console.log(`🌤️ Hava Durumu Çekildi -> Sıcaklık: ${temperature}°C, Nem: %${humidity}, Yağış Olasılığı: %${rain_probability}`);
+        } catch (weatherErr) {
+            console.error("⚠️ Hava durumu API'den çekilemedi, varsayılan/sıfır değerler kullanılacak:", weatherErr.message);
+        }
+
+        // 1. Hem ESP32'den gelen donanım verisini hem de API'den gelen hava durumunu veritabanına kaydet
         await pool.query(
             `INSERT INTO sensor_logs 
             (soil_moisture, temperature, humidity, rain_probability, is_raining, battery_voltage, battery_level, wifi_connected, recorded_at) 
@@ -47,12 +70,10 @@ app.post('/api/sensors/data', async (req, res) => {
         let action = "SKIP";
         let duration = 0;
 
-        // --- YENİ EKLENEN KARAR MANTIĞI ---
-        
-        // DURUM 1: Nem düşük, yağmur yağmıyor VE yağmur BEKLENMİYORSA -> SULA
+        // --- KARAR MANTIĞI ---
         if (moisture < moistureThreshold && !is_raining && rain_probability < rainProbThreshold) {
             action = "IRRIGATE";
-            duration = 15; // 15 saniye (ESP32 tarafında saniye olarak işlenir)
+            duration = 15; 
             
             await pool.query(
                 `INSERT INTO irrigation_history (start_time, duration_minutes, trigger_type, moisture_before, moisture_after, liters_consumed) 
@@ -65,11 +86,9 @@ app.post('/api/sensors/data', async (req, res) => {
                 [Math.round(moisture), now]
             );
         } 
-        // DURUM 2: Nem düşük, yağmur yağmıyor AMA YAĞMUR BEKLENİYORSA -> SULAMAYI ERTELE
         else if (moisture < moistureThreshold && !is_raining && rain_probability >= rainProbThreshold) {
             console.log(`🌧️ Beklenen Yağmur Olasılığı (%${rain_probability}) yüksek. Sulama ERTELENDİ.`);
             
-            // Eğer o saat içinde erteleme bildirimi atmamışsak atalım (Spam olmaması için opsiyonel yapılabilir)
             await pool.query(
                 `INSERT INTO notifications (type, title, message, read, timestamp) 
                  VALUES ('warning', 'Sulama Ertelendi', 'Nem düşük ancak yaklaşan yağmur tahmini (%' || $1 || ') nedeniyle sulama tasarruf amaçlı yapılmadı.', false, $2)`,
@@ -77,7 +96,7 @@ app.post('/api/sensors/data', async (req, res) => {
             );
         }
 
-        // ESP32'ye verilecek emiri dön (SULA veya PAS GEÇ)
+        // ESP32'ye verilecek emiri dön
         res.json({ success: true, action: action, duration: duration });
 
     } catch (err) {
@@ -86,6 +105,7 @@ app.post('/api/sensors/data', async (req, res) => {
     }
 });
 
+// Diğer endpointler (history, notifications, pump/control, vb.) aynen kalıyor...
 app.get('/api/history', async (req, res) => {
     try {
         const result = await pool.query('SELECT * FROM irrigation_history ORDER BY start_time DESC');

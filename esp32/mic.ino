@@ -15,11 +15,8 @@ const char* ssid = "Zeynep";
 const char* password = "bisifrebul00"; 
 const char* backendUrl = "http://192.168.36.251/api/sensors/data";
  
-// --- HAVA DURUMU (OPEN-METEO) AYARLARI ---
-// API Key yok! Sadece şehrinizin enlem (latitude) ve boylam (longitude) değerleri.
-// Şu an Ankara (39.92, 32.85) için ayarlıdır. Başka şehir için değiştirebilirsiniz.
-const char* latitude = "39.92"; 
-const char* longitude = "32.85";
+// NOT: Hava durumu (Open-Meteo) işlemleri ESP32'nin RAM'ini yormaması 
+// ve daha kararlı çalışması için sunucu (Node.js) tarafına taşınmıştır.
 
 LiquidCrystal_I2C lcd(0x27, 16, 2);
 
@@ -71,37 +68,6 @@ void loop() {
   delay(60000);
 }
 
-// --- OPEN-METEO ÜCRETSİZ HAVA DURUMU SORGULAMA ---
-int fetchRainProbability() {
-  if(WiFi.status() != WL_CONNECTED) return 0;
-  
-  HTTPClient http;
-  
-  // forecast_hours=1 ile sadece içinde bulunduğumuz saatin yağış ihtimalini (% olarak) çekiyoruz.
-  String url = "http://api.open-meteo.com/v1/forecast?latitude=" + String(latitude) + "&longitude=" + String(longitude) + "&hourly=precipitation_probability&forecast_hours=1";
-  
-  http.begin(url);
-  int httpCode = http.GET();
-  int prob = 0;
-  
-  if (httpCode == 200) {
-    String payload = http.getString();
-    
-    // Open-Meteo JSON yanıtı için bellek ayırma
-    DynamicJsonDocument doc(1024); 
-    deserializeJson(doc, payload);
-    
-    // JSON içerisinden hourly -> precipitation_probability -> ilk elemanı (0. index) alıyoruz
-    prob = doc["hourly"]["precipitation_probability"][0]; 
-    Serial.println("Yagmur Ihtimali (Open-Meteo): %" + String(prob));
-  } else {
-    Serial.println("Hava durumu API hatasi! HTTP Kodu: " + String(httpCode));
-  }
-  
-  http.end();
-  return prob;
-}
-
 // --- KARAR MOTORLARI ---
 
 void processOnlineMode(float m, bool r, float bv, float bp) {
@@ -109,14 +75,9 @@ void processOnlineMode(float m, bool r, float bv, float bp) {
   http.begin(backendUrl);
   http.addHeader("Content-Type", "application/json");
 
-  StaticJsonDocument<512> doc;
+  // Yalnızca donanım verilerini gönderiyoruz (Bellek tasarrufu)
+  StaticJsonDocument<256> doc;
   doc["moisture"] = m;
-  doc["temperature"] = 24.0; 
-  doc["humidity"] = 50.0;
-  
-  // Fonksiyonu çağır ve gelen %'lik veriyi backend'e ilet
-  doc["rain_probability"] = fetchRainProbability(); 
-  
   doc["is_raining"] = r;
   doc["battery_voltage"] = bv;
   doc["battery_level"] = bp;
@@ -137,6 +98,9 @@ void processOnlineMode(float m, bool r, float bv, float bp) {
     if (action == "IRRIGATE") {
       runPump(duration);
     }
+  } else {
+    Serial.print("Sunucuya baglanilamadi, HTTP Kodu: ");
+    Serial.println(httpCode);
   }
   http.end();
 }
